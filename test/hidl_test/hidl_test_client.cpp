@@ -722,13 +722,7 @@ TEST_F(HidlTest, ServiceListManifestByInterfaceTest) {
                                                    ASSERT_EQ(1, registered.size());
                                                    EXPECT_EQ("default", registered[0]);
                                                }));
-    // vendor service (this is required on all devices)
-    EXPECT_OK(
-        manager->listManifestByInterface("android.hardware.configstore@1.0::ISurfaceFlingerConfigs",
-                                         [](const hidl_vec<hidl_string>& registered) {
-                                             ASSERT_EQ(1, registered.size());
-                                             EXPECT_EQ("default", registered[0]);
-                                         }));
+
     // test service that will never be in a manifest
     EXPECT_OK(manager->listManifestByInterface(
         IParent::descriptor,
@@ -2662,7 +2656,7 @@ static void usage(const char *me) {
 }
 
 int main(int argc, char **argv) {
-    setenv("TREBLE_TESTING_OVERRIDE", "true", true);
+    android::hardware::details::setTrebleTestingOverride(true);
 
     const char *me = argv[0];
     bool b = false;
