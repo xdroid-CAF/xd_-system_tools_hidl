@@ -84,7 +84,7 @@ static FQName getLatestMinorVersionFQNameFromList(const FQName& fqName,
 }
 
 static FQName getLatestMinorVersionNamedTypeFromList(const FQName& fqName,
-                                                     const std::vector<const NamedType*>& list) {
+                                                     const std::set<const NamedType*>& list) {
     FQName currentCandidate = fqName;
     bool found = false;
     for (const NamedType* currentNamedType : list) {
@@ -157,11 +157,11 @@ static AST* parse(const Coordinator& coordinator, const FQName& target) {
     return ast;
 }
 
-static void getSubTypes(const NamedType& namedType, std::vector<const NamedType*>* types) {
+static void getSubTypes(const NamedType& namedType, std::set<const NamedType*>* types) {
     if (namedType.isScope()) {
         const Scope& compoundType = static_cast<const Scope&>(namedType);
         for (const NamedType* subType : compoundType.getSubTypes()) {
-            types->push_back(subType);
+            types->insert(subType);
             getSubTypes(*subType, types);
         }
     }
@@ -320,40 +320,56 @@ int main(int argc, char** argv) {
                   fqName);
 
     // Gather all the types and interfaces
-    std::vector<const NamedType*> namedTypesInPackage;
+    std::set<const NamedType*> namedTypesInPackage;
     for (const FQName& target : targets) {
 
         AST* ast = parse(coordinator, target);
         CHECK(ast);
 
-        getSubTypes(ast->getRootScope(), &namedTypesInPackage);
-
         const Interface* iface = ast->getInterface();
         if (iface) {
-            namedTypesInPackage.push_back(iface);
+            namedTypesInPackage.insert(iface);
 
             // Get all of the types defined in the interface chain(includes self)
             for (const Interface* interface : iface->typeChain()) {
                 getSubTypes(*interface, &namedTypesInPackage);
             }
+        } else {
+            getSubTypes(ast->getRootScope(), &namedTypesInPackage);
         }
     }
 
-    // Remove all of the older repeated versions of types and keep the latest
-    const auto& endNamedTypes = std::remove_if(
-            namedTypesInPackage.begin(), namedTypesInPackage.end(),
-            [&](const NamedType* namedType) -> bool {
-                return getLatestMinorVersionNamedTypeFromList(
-                               namedType->fqName(), namedTypesInPackage) != namedType->fqName();
-            });
-    namedTypesInPackage.erase(endNamedTypes, namedTypesInPackage.end());
+    // Remove all of the older versions of types and keep the latest
+    for (auto it = namedTypesInPackage.begin(); it != namedTypesInPackage.end();) {
+        if (getLatestMinorVersionNamedTypeFromList((*it)->fqName(), namedTypesInPackage) !=
+            (*it)->fqName()) {
+            it = namedTypesInPackage.erase(it);
+        } else {
+            it++;
+        }
+    }
+
+    // Process and flatten all of the types. Many types include fields of older
+    // versions of that type.
+    // This step recursively finds all of those fields and adds their fields to
+    // the most recent top level type.
+    std::map<const NamedType*, const ProcessedCompoundType> processedTypesInPackage;
+    for (const auto& namedType : namedTypesInPackage) {
+        if (namedType->isCompoundType()) {
+            ProcessedCompoundType processed;
+            AidlHelper::processCompoundType(static_cast<const CompoundType&>(*namedType),
+                                            &processed);
+            processedTypesInPackage.insert(
+                    std::pair<const NamedType*, const ProcessedCompoundType>(namedType, processed));
+        }
+    }
 
     // Emit all types and interfaces
     // The interfaces and types are still be further manipulated inside
     // emitAidl. The interfaces are consolidating methods from their typechains
     // and the composite types are being flattened.
     for (const auto& namedType : namedTypesInPackage) {
-        AidlHelper::emitAidl(*namedType, coordinator);
+        AidlHelper::emitAidl(*namedType, coordinator, processedTypesInPackage);
     }
 
     err << "END OF LOG\n";
