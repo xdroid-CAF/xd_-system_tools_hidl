@@ -19,7 +19,10 @@ genrule {
     tools: ["hidl2aidl"],
     cmd: "$(location hidl2aidl) -o $(genDir)/ " +
         "-rhidl2aidl:system/tools/hidl/hidl2aidl/test " +
-        "hidl2aidl@1.0 hidl2aidl@2.0",
+        "hidl2aidl@1.2 && " +
+        "$(location hidl2aidl) -o $(genDir)/ " +
+        "-rhidl2aidl:system/tools/hidl/hidl2aidl/test " +
+        "hidl2aidl@2.0",
     srcs: [
         "1.0/IBar.hal",
         "1.0/IFoo.hal",
@@ -47,8 +50,13 @@ genrule {
 
 aidl_interface {
     name: "hidl2aidl_test_gen",
-    unstable: true,
+    stability: "vintf",
     srcs: [":hidl2aidl_test_gen_aidl"],
+    backend: {
+        java: {
+            sdk_version: "module_current",
+        },
+    },
 }
 
 cc_test_library {
@@ -71,6 +79,6 @@ phony {
     name: "hidl2aidl_test",
     required: [
         "hidl2aidl_test_comp_cc",
-        "hidl2aidl_test_gen",
+        "hidl2aidl_test_gen-java",
     ],
 }
