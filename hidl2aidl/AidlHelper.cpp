@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/strings.h>
 #include <hidl-util/FQName.h>
 #include <hidl-util/Formatter.h>
 #include <hidl-util/StringHelper.h>
+#include <iostream>
 #include <set>
 #include <string>
 #include <vector>
@@ -36,6 +38,7 @@
 namespace android {
 
 Formatter* AidlHelper::notesFormatter = nullptr;
+std::string AidlHelper::fileHeader = "";
 
 Formatter& AidlHelper::notes() {
     CHECK(notesFormatter != nullptr);
@@ -64,7 +67,15 @@ std::string AidlHelper::getAidlPackage(const FQName& fqName) {
     return aidlPackage;
 }
 
-std::string AidlHelper::getAidlFQName(const FQName& fqName) {
+std::string AidlHelper::getAidlPackagePath(const FQName& fqName) {
+    return base::Join(base::Split(AidlHelper::getAidlPackage(fqName), "."), "/");
+}
+
+std::optional<std::string> AidlHelper::getAidlFQName(const FQName& fqName) {
+    std::optional<const ReplacedTypeInfo> type = getAidlReplacedType(fqName);
+    if (type) {
+        return type.value().aidlReplacedFQName;
+    }
     return getAidlPackage(fqName) + "." + getAidlName(fqName);
 }
 
@@ -81,8 +92,10 @@ void AidlHelper::importLocallyReferencedType(const Type& type, std::set<std::str
     if (!type.isNamedType()) return;
     const NamedType& namedType = *static_cast<const NamedType*>(&type);
 
-    std::string import = AidlHelper::getAidlFQName(namedType.fqName());
-    imports->insert(import);
+    std::optional<std::string> import = AidlHelper::getAidlFQName(namedType.fqName());
+    if (import) {
+        imports->insert(import.value());
+    }
 }
 
 // This tries iterating over the HIDL AST which is a bit messy because
@@ -92,7 +105,7 @@ void AidlHelper::importLocallyReferencedType(const Type& type, std::set<std::str
 void AidlHelper::emitFileHeader(
         Formatter& out, const NamedType& type,
         const std::map<const NamedType*, const ProcessedCompoundType>& processedTypes) {
-    out << "// FIXME: license file if you have one\n\n";
+    AidlHelper::emitFileHeader(out);
     out << "package " << getAidlPackage(type.fqName()) << ";\n\n";
 
     std::set<std::string> imports;
@@ -151,16 +164,17 @@ void AidlHelper::emitFileHeader(
 Formatter AidlHelper::getFileWithHeader(
         const NamedType& namedType, const Coordinator& coordinator,
         const std::map<const NamedType*, const ProcessedCompoundType>& processedTypes) {
-    std::string aidlPackage = getAidlPackage(namedType.fqName());
-    Formatter out = coordinator.getFormatter(namedType.fqName(), Coordinator::Location::DIRECT,
-                                             base::Join(base::Split(aidlPackage, "."), "/") + "/" +
-                                                     getAidlName(namedType.fqName()) + ".aidl");
+    Formatter out =
+            coordinator.getFormatter(namedType.fqName(), Coordinator::Location::DIRECT,
+                                     AidlHelper::getAidlPackagePath(namedType.fqName()) + "/" +
+                                             getAidlName(namedType.fqName()) + ".aidl");
     emitFileHeader(out, namedType, processedTypes);
     return out;
 }
 
 void AidlHelper::processCompoundType(const CompoundType& compoundType,
-                                     ProcessedCompoundType* processedType) {
+                                     ProcessedCompoundType* processedType,
+                                     const std::string& fieldNamePrefix) {
     // Gather all of the subtypes defined in this type
     for (const NamedType* subType : compoundType.getSubTypes()) {
         processedType->subTypes.insert(subType);
@@ -171,7 +185,8 @@ void AidlHelper::processCompoundType(const CompoundType& compoundType,
     for (const NamedReference<Type>* field : compoundType.getFields()) {
         // Check for references to an older version of itself
         if (field->get()->typeName() == compoundType.typeName()) {
-            processCompoundType(static_cast<const CompoundType&>(*field->get()), processedType);
+            processCompoundType(static_cast<const CompoundType&>(*field->get()), processedType,
+                                fieldNamePrefix + field->name() + ".");
         } else {
             // Handle duplicate field names. Keep only the most recent definitions.
             auto it = std::find_if(processedType->fields.begin(), processedType->fields.end(),
@@ -190,7 +205,7 @@ void AidlHelper::processCompoundType(const CompoundType& compoundType,
                             << "." << version.second << " and discarding "
                             << (it->field)->get()->typeName() << " from " << it->version.first
                             << "." << it->version.second << ".\n";
-
+                    it->fullName = fieldNamePrefix + field->name();
                     it->field = field;
                     it->version = version;
                 } else {
@@ -201,9 +216,27 @@ void AidlHelper::processCompoundType(const CompoundType& compoundType,
                             << version.second << ".\n";
                 }
             } else {
-                processedType->fields.push_back({field, field->name(), version});
+                processedType->fields.push_back({field, fieldNamePrefix + field->name(), version});
             }
         }
+    }
+}
+
+void AidlHelper::setFileHeader(const std::string& file) {
+    if (!file.empty()) {
+        if (!android::base::ReadFileToString(file, &fileHeader)) {
+            std::cerr << "ERROR: Failed to find license file: " << file << "\n";
+            exit(1);
+        }
+    }
+}
+
+void AidlHelper::emitFileHeader(Formatter& out) {
+    if (fileHeader.empty()) {
+        out << "// FIXME: license file, or use the -l option to generate the files with the "
+               "header.\n\n";
+    } else {
+        out << fileHeader << "\n";
     }
 }
 
