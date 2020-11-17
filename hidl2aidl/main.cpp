@@ -35,7 +35,7 @@ using namespace android;
 static void usage(const char* me) {
     Formatter out(stderr);
 
-    out << "Usage: " << me << " [-fh] [-o <output path>] ";
+    out << "Usage: " << me << " [-fh] [-o <output path>] [-l <header file>] ";
     Coordinator::emitOptionsUsageString(out);
     out << " FQNAME\n\n";
 
@@ -48,6 +48,7 @@ static void usage(const char* me) {
     out << "-f: Force hidl2aidl to convert older packages\n";
     out << "-h: Prints this menu.\n";
     out << "-o <output path>: Location to output files.\n";
+    out << "-l <header file>: File containing a header to prepend to generated files.\n";
     Coordinator::emitOptionsDetailString(out);
 
     out.unindent();
@@ -167,24 +168,58 @@ static void getSubTypes(const NamedType& namedType, std::set<const NamedType*>* 
     }
 }
 
-static void emitBuildFile(Formatter out, const FQName& fqName) {
-    std::string aidlPackage = AidlHelper::getAidlPackage(fqName);
+static void emitAidlSharedLibs(Formatter& out, FQName fqName, AidlBackend backend) {
+    if (backend == AidlBackend::NDK) {
+        out << "        \"libbinder_ndk\",\n";
+        out << "        \"libhidlbase\",\n";
+        out << "        \"" << AidlHelper::getAidlPackage(fqName) << "-ndk_platform\",\n";
+    } else if (backend == AidlBackend::CPP) {
+        out << "        \"libbinder\",\n";
+        out << "        \"libhidlbase\",\n";
+        out << "        \"" << AidlHelper::getAidlPackage(fqName) << "-cpp\",\n";
+        out << "        \"libutils\",\n";
+    }
+}
 
+static void emitHidlSharedLibs(Formatter& out, std::vector<FQName>& targets) {
+    std::set<std::string> uniquePackages;
+    for (const auto& target : targets) {
+        uniquePackages.insert(target.getPackageAndVersion().string());
+    }
+    for (const auto& package : uniquePackages) {
+        out << "        \"" << package << "\",\n";
+    }
+}
+
+static std::string aidlTranslateLibraryName(FQName fqName, AidlBackend backend) {
+    std::string postfix;
+    if (backend == AidlBackend::NDK) {
+        postfix = "-ndk";
+    } else if (backend == AidlBackend::CPP) {
+        postfix = "-cpp";
+    } else {
+        postfix = "";
+    }
+    return AidlHelper::getAidlPackage(fqName) + "-translate" + postfix;
+}
+
+static void emitBuildFile(Formatter& out, const FQName& fqName, std::vector<FQName>& targets,
+                          bool needsTranslation) {
     out << "// This is the expected build file, but it may not be right in all cases\n";
     out << "\n";
     out << "aidl_interface {\n";
-    out << "    name: \"" << aidlPackage << "\",\n";
+    out << "    name: \"" << AidlHelper::getAidlPackage(fqName) << "\",\n";
     out << "    vendor_available: true,\n";
-    out << "    srcs: [\"" << base::Join(base::Split(aidlPackage, "."), "/") << "/*.aidl\"],\n";
+    out << "    srcs: [\"" << AidlHelper::getAidlPackagePath(fqName) << "/*.aidl\"],\n";
     out << "    stability: \"vintf\",\n";
     out << "    backend: {\n";
     out << "        cpp: {\n";
-    out << "            // disabled for portability\n";
+    out << "            // FIXME should this be disabled?\n";
     out << "            // prefer NDK backend which can be used anywhere\n";
-    out << "            enabled: false,\n";
+    out << "            enabled: true,\n";
     out << "        },\n";
     out << "        java: {\n";
-    out << "            platform_apis: true,\n";
+    out << "            sdk_version: \"module_current\",\n";
     out << "        },\n";
     out << "        ndk: {\n";
     out << "            vndk: {\n";
@@ -192,7 +227,24 @@ static void emitBuildFile(Formatter out, const FQName& fqName) {
     out << "            },\n";
     out << "        },\n";
     out << "    },\n";
-    out << "}\n";
+    out << "}\n\n";
+
+    if (!needsTranslation) return;
+
+    for (auto backend : {AidlBackend::CPP, AidlBackend::NDK}) {
+        out << "cc_library {\n";
+        out << "    name: \"" << aidlTranslateLibraryName(fqName, backend) << +"\",\n";
+        if (backend == AidlBackend::NDK) {
+            out << "    vendor_available: true,\n";
+        }
+        out << "    srcs: [\"" << AidlHelper::translateSourceFile(fqName, backend) + "\"],\n";
+        out << "    shared_libs: [\n";
+        emitAidlSharedLibs(out, fqName, backend);
+        emitHidlSharedLibs(out, targets);
+        out << "    ],\n";
+        out << "    export_include_dirs: [\"include\"],\n";
+        out << "}\n\n";
+    }
 }
 
 // hidl is intentionally leaky. Turn off LeakSanitizer by default.
@@ -210,8 +262,9 @@ int main(int argc, char** argv) {
 
     Coordinator coordinator;
     std::string outputPath;
+    std::string fileHeader;
     bool forceConvertOldInterfaces = false;
-    coordinator.parseOptions(argc, argv, "fho:", [&](int res, char* arg) {
+    coordinator.parseOptions(argc, argv, "fho:l:", [&](int res, char* arg) {
         switch (res) {
             case 'o': {
                 if (!outputPath.empty()) {
@@ -221,6 +274,13 @@ int main(int argc, char** argv) {
                 outputPath = arg;
                 break;
             }
+            case 'l':
+                if (!fileHeader.empty()) {
+                    fprintf(stderr, "ERROR: -l <header file> can only be specified once.\n");
+                    exit(1);
+                }
+                fileHeader = arg;
+                break;
             case 'f':
                 forceConvertOldInterfaces = true;
                 break;
@@ -238,6 +298,7 @@ int main(int argc, char** argv) {
         outputPath += "/";
     }
     coordinator.setOutputPath(outputPath);
+    AidlHelper::setFileHeader(fileHeader);
 
     argc -= optind;
     argv += optind;
@@ -311,13 +372,9 @@ int main(int argc, char** argv) {
     // Set up AIDL conversion log
     Formatter err =
             coordinator.getFormatter(fqName, Coordinator::Location::DIRECT, "conversion.log");
-    std::string aidlPackage = AidlHelper::getAidlPackage(fqName);
-    err << "Notes relating to hidl2aidl conversion of " << fqName.string() << " to " << aidlPackage
-        << " (if any) follow:\n";
+    err << "Notes relating to hidl2aidl conversion of " << fqName.string() << " to "
+        << AidlHelper::getAidlPackage(fqName) << " (if any) follow:\n";
     AidlHelper::setNotes(&err);
-
-    emitBuildFile(coordinator.getFormatter(fqName, Coordinator::Location::DIRECT, "Android.bp"),
-                  fqName);
 
     // Gather all the types and interfaces
     std::set<const NamedType*> namedTypesInPackage;
@@ -358,11 +415,16 @@ int main(int argc, char** argv) {
         if (namedType->isCompoundType()) {
             ProcessedCompoundType processed;
             AidlHelper::processCompoundType(static_cast<const CompoundType&>(*namedType),
-                                            &processed);
+                                            &processed, std::string());
             processedTypesInPackage.insert(
                     std::pair<const NamedType*, const ProcessedCompoundType>(namedType, processed));
         }
     }
+
+    Formatter buildFile =
+            coordinator.getFormatter(fqName, Coordinator::Location::DIRECT, "Android.bp");
+    emitBuildFile(buildFile, fqName, targets, !processedTypesInPackage.empty());
+    AidlHelper::emitTranslation(coordinator, fqName, namedTypesInPackage, processedTypesInPackage);
 
     // Emit all types and interfaces
     // The interfaces and types are still be further manipulated inside

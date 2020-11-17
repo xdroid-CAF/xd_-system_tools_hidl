@@ -47,6 +47,19 @@ struct ProcessedCompoundType {
     std::set<const NamedType*> subTypes;
 };
 
+struct ReplacedTypeInfo {
+    // if a HIDL type is replaced, this returns the new AIDL type
+    // android.hardware.safe_enum@1.0::Monostate -> boolean
+    std::string aidlReplacedType;
+    // if a HIDL type is replaced, this is the FQName of the new AIDL type
+    // android.hardware.safe_enum@1.0::Monostate -> std::nullopt
+    std::optional<std::string> aidlReplacedFQName;
+    // if a HIDL type is replaced, this returns the function needed to generate translation
+    std::optional<std::function<void(Formatter&)>> translateField;
+};
+
+enum class AidlBackend { UNKNOWN, NDK, CPP, JAVA };
+
 struct AidlHelper {
     /* FQName helpers */
     // getAidlName returns the type names
@@ -57,9 +70,15 @@ struct AidlHelper {
     // android.hardware.foo@1.x -> android.hardware.foo
     // android.hardware.foo@2.x -> android.hardware.foo2
     static std::string getAidlPackage(const FQName& fqName);
+    // returns getAidlPackage(fqName) with '.' replaced by '/'
+    // android.hardware.foo@1.x -> android/hardware/foo
+    static std::string getAidlPackagePath(const FQName& fqName);
 
     // getAidlFQName = getAidlPackage + "." + getAidlName
-    static std::string getAidlFQName(const FQName& fqName);
+    static std::optional<std::string> getAidlFQName(const FQName& fqName);
+
+    // if a HIDL type is replaced, this returns the ReplacedTypeInfo for the new AIDL type
+    static std::optional<const ReplacedTypeInfo> getAidlReplacedType(const FQName& fqName);
 
     static void emitFileHeader(
             Formatter& out, const NamedType& type,
@@ -84,14 +103,27 @@ struct AidlHelper {
     static std::vector<const Method*> getUserDefinedMethods(const Interface& interface);
 
     static void processCompoundType(const CompoundType& compoundType,
-                                    ProcessedCompoundType* processedType);
+                                    ProcessedCompoundType* processedType,
+                                    const std::string& fieldNamePrefix);
 
     static Formatter& notes();
     static void setNotes(Formatter* formatter);
 
+    // return the full file names for the header/source files based on the backend
+    static std::string translateHeaderFile(const FQName& fqName, AidlBackend backend);
+    static std::string translateSourceFile(const FQName& fqName, AidlBackend backend);
+
+    static void emitTranslation(
+            const Coordinator& coordinator, const FQName& fqName,
+            const std::set<const NamedType*>& namedTypesInPackage,
+            const std::map<const NamedType*, const ProcessedCompoundType>& processedTypes);
+    static void setFileHeader(const std::string& file);
+    static void emitFileHeader(Formatter& out);
+
   private:
     // This is the formatter to use for additional conversion output
     static Formatter* notesFormatter;
+    static std::string fileHeader;
 };
 
 }  // namespace android
