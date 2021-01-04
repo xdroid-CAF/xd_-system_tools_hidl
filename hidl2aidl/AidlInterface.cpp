@@ -142,8 +142,10 @@ static bool shouldWarnStatusType(const std::string& typeName) {
     return false;
 }
 
-void AidlHelper::emitAidl(const Interface& interface, const Coordinator& coordinator) {
-    Formatter out = getFileWithHeader(interface, coordinator);
+void AidlHelper::emitAidl(
+        const Interface& interface, const Coordinator& coordinator,
+        const std::map<const NamedType*, const ProcessedCompoundType>& processedTypes) {
+    Formatter out = getFileWithHeader(interface, coordinator, processedTypes);
 
     interface.emitDocComment(out);
     if (interface.superType() && interface.superType()->fqName() != gIBaseFqName) {
@@ -151,6 +153,7 @@ void AidlHelper::emitAidl(const Interface& interface, const Coordinator& coordin
             << " but AIDL does not support interface inheritance.\n";
     }
 
+    out << "@VintfStability\n";
     out << "interface " << getAidlName(interface.fqName()) << " ";
     out.block([&] {
         std::map<std::string, NodeWithVersion<NamedType>> latestTypeForBaseName;
@@ -201,11 +204,6 @@ void AidlHelper::emitAidl(const Interface& interface, const Coordinator& coordin
                          << " since a newer alternative is available.";
                  });
         if (!supersededMethods.empty()) out << "\n\n";
-
-        // Emit latest types defined for this interface only
-        for (auto const& [name, typeWithVersion] : latestTypeForBaseName) {
-            emitAidl(*typeWithVersion.node, coordinator);
-        }
 
         // Emit latest methods defined for this interface
         out.join(latestMethodForBaseName.begin(), latestMethodForBaseName.end(), "\n",
@@ -291,16 +289,18 @@ void AidlHelper::emitAidl(const Interface& interface, const Coordinator& coordin
                          emitAidlMethodParams(&wrappedOutput, method->args(), /* prefix */ "in ",
                                               /* attachToLast */ ");\n", interface);
                      } else {
-                         if (!method->args().empty()) {
+                         const bool emitArgs = !method->args().empty();
+                         if (emitArgs) {
                              emitAidlMethodParams(&wrappedOutput, method->args(),
                                                   /* prefix */ "in ",
                                                   /* attachToLast */ ",", interface);
-                             wrappedOutput.printUnlessWrapped(" ");
                          }
-
-                         // TODO: Emit warning if a primitive is given as a out param.
-                         emitAidlMethodParams(&wrappedOutput, results, /* prefix */ "out ",
-                                              /* attachToLast */ ");\n", interface);
+                         wrappedOutput.group([&] {
+                             if (emitArgs) wrappedOutput.printUnlessWrapped(" ");
+                             // TODO: Emit warning if a primitive is given as a out param.
+                             emitAidlMethodParams(&wrappedOutput, results, /* prefix */ "out ",
+                                                  /* attachToLast */ ");\n", interface);
+                         });
                      }
 
                      out << wrappedOutput;

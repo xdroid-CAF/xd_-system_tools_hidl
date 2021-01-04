@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 The Android Open Source Project
+ * Copyright (C) 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,25 @@
  * limitations under the License.
  */
 
-#include "AidlHelper.h"
-#include "Coordinator.h"
-#include "NamedType.h"
-#include "Scope.h"
+package hidl2aidl.test@1.1;
 
-namespace android {
+import @1.2::IFoo;
 
-void AidlHelper::emitAidl(const Scope& scope, const Coordinator& coordinator) {
-    for (const NamedType* type : scope.getSubTypes()) {
-        AidlHelper::emitAidl(*type, coordinator);
-    }
-}
+/**
+ * The types in this package are not supported in the Java backend of HIDL
+ */
+interface IFoo extends @1.2::IFoo {
+    ImportedStruct(Outer outer);
 
-}  // namespace android
+    /**
+     * @param mem memory
+     */
+    useMemory(memory mem);
+    shouldImportCorrectTypes() generates (vec<OnlyIn11> lst);
+
+    removedOutput() generates (string status);
+
+    fmqMethod(fmq_sync<bool> sync, fmq_unsync<int32_t> unsync) generates (pointer t);
+
+    retVec(int8_t a) generates (vec<string> b);
+};
