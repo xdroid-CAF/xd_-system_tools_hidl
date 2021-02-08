@@ -517,6 +517,10 @@ type hidlInterfaceProperties struct {
 	// does  not apply to VTS targets/adapter targets/fuzzers since these components
 	// should not be shipped on device.
 	Apex_available []string
+
+	// Installs the vendor variant of the module to the /odm partition instead of
+	// the /vendor partition.
+	Odm_available *bool
 }
 
 type hidlInterface struct {
@@ -636,6 +640,11 @@ This corresponds to the "-r%s:<some path>" option that would be passed into hidl
 		productAvailable = proptools.BoolPtr(true)
 	}
 
+	var vendorAvailable *bool
+	if !proptools.Bool(i.properties.Odm_available) {
+		vendorAvailable = proptools.BoolPtr(true)
+	}
+
 	var libraryIfExists []string
 	if shouldGenerateLibrary {
 		libraryIfExists = []string{name.string()}
@@ -679,7 +688,8 @@ This corresponds to the "-r%s:<some path>" option that would be passed into hidl
 			Name:               proptools.StringPtr(name.string()),
 			Host_supported:     proptools.BoolPtr(true),
 			Recovery_available: proptools.BoolPtr(true),
-			Vendor_available:   proptools.BoolPtr(true),
+			Vendor_available:   vendorAvailable,
+			Odm_available:      i.properties.Odm_available,
 			Product_available:  productAvailable,
 			Double_loadable:    proptools.BoolPtr(isDoubleLoadable(name.string())),
 			Defaults:           []string{"hidl-module-defaults"},
@@ -722,9 +732,10 @@ This corresponds to the "-r%s:<some path>" option that would be passed into hidl
 			// to build framework, which is used to build system_current.  Use core_current
 			// plus hwbinder.stubs, which together form a subset of system_current that does
 			// not depend on framework.
-			Sdk_version:    proptools.StringPtr("core_current"),
-			Libs:           []string{"hwbinder.stubs"},
-			Apex_available: i.properties.Apex_available,
+			Sdk_version:     proptools.StringPtr("core_current"),
+			Libs:            []string{"hwbinder.stubs"},
+			Apex_available:  i.properties.Apex_available,
+			Min_sdk_version: getMinSdkVersion(name.string()),
 		}
 
 		mctx.CreateModule(java.LibraryFactory, &javaProperties{
@@ -749,11 +760,12 @@ This corresponds to the "-r%s:<some path>" option that would be passed into hidl
 			Outputs:    []string{name.sanitizedDir() + "Constants.java"},
 		})
 		mctx.CreateModule(java.LibraryFactory, &javaProperties{
-			Name:           proptools.StringPtr(name.javaConstantsName()),
-			Defaults:       []string{"hidl-java-module-defaults"},
-			Sdk_version:    proptools.StringPtr("core_current"),
-			Srcs:           []string{":" + name.javaConstantsSourcesName()},
-			Apex_available: i.properties.Apex_available,
+			Name:            proptools.StringPtr(name.javaConstantsName()),
+			Defaults:        []string{"hidl-java-module-defaults"},
+			Sdk_version:     proptools.StringPtr("core_current"),
+			Srcs:            []string{":" + name.javaConstantsSourcesName()},
+			Apex_available:  i.properties.Apex_available,
+			Min_sdk_version: getMinSdkVersion(name.string()),
 		})
 	}
 
@@ -780,7 +792,8 @@ This corresponds to the "-r%s:<some path>" option that would be passed into hidl
 
 	mctx.CreateModule(cc.LibraryFactory, &ccProperties{
 		Name:              proptools.StringPtr(name.adapterHelperName()),
-		Vendor_available:  proptools.BoolPtr(true),
+		Vendor_available:  vendorAvailable,
+		Odm_available:     i.properties.Odm_available,
 		Product_available: productAvailable,
 		Defaults:          []string{"hidl-module-defaults"},
 		Generated_sources: []string{name.adapterHelperSourcesName()},
@@ -1009,7 +1022,25 @@ var minSdkVersion = map[string]string{
 	"android.hardware.neuralnetworks@1.1":       "30",
 	"android.hardware.neuralnetworks@1.2":       "30",
 	"android.hardware.neuralnetworks@1.3":       "30",
+	"android.hardware.wifi@1.0":                 "30",
+	"android.hardware.wifi@1.1":                 "30",
+	"android.hardware.wifi@1.2":                 "30",
+	"android.hardware.wifi@1.3":                 "30",
+	"android.hardware.wifi@1.4":                 "30",
+	"android.hardware.wifi@1.5":                 "30",
+	"android.hardware.wifi.hostapd@1.0":         "30",
+	"android.hardware.wifi.hostapd@1.1":         "30",
+	"android.hardware.wifi.hostapd@1.2":         "30",
+	"android.hardware.wifi.hostapd@1.3":         "30",
+	"android.hardware.wifi.supplicant@1.0":      "30",
+	"android.hardware.wifi.supplicant@1.1":      "30",
+	"android.hardware.wifi.supplicant@1.2":      "30",
+	"android.hardware.wifi.supplicant@1.3":      "30",
+	"android.hardware.wifi.supplicant@1.4":      "30",
 	"android.hidl.allocator@1.0":                "29",
+	"android.hidl.manager@1.0":                  "30",
+	"android.hidl.manager@1.1":                  "30",
+	"android.hidl.manager@1.2":                  "30",
 	"android.hidl.memory.token@1.0":             "29",
 	"android.hidl.memory@1.0":                   "29",
 	"android.hidl.safe_union@1.0":               "29",
