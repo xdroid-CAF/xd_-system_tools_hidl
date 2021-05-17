@@ -61,9 +61,18 @@ static void emitAidlMethodParams(WrappedOutput* wrappedOutput,
     }
 }
 
-std::vector<const Method*> AidlHelper::getUserDefinedMethods(const Interface& interface) {
+std::vector<const Method*> AidlHelper::getUserDefinedMethods(Formatter& out,
+                                                             const Interface& interface) {
     std::vector<const Method*> methods;
     for (const Interface* iface : interface.typeChain()) {
+        if (!AidlHelper::shouldBeExpanded(interface.fqName(), iface->fqName()) &&
+            iface->fqName() != gIBaseFqName) {
+            out << "// Types from " << iface->fqName().string()
+                << " are not included because it is in a separate package, and it is expected to "
+                   "be a separate AIDL interface. To include these methods, use the '-e' argument. "
+                   "\n";
+            break;
+        }
         const std::vector<Method*> userDefined = iface->userDefinedMethods();
         methods.insert(methods.end(), userDefined.begin(), userDefined.end());
     }
@@ -142,6 +151,25 @@ static bool shouldWarnStatusType(const std::string& typeName) {
     return false;
 }
 
+static bool shouldWarnOutParam(const std::string& typeName) {
+    static const std::vector<std::string> kNoOutParamTypes = {"ParcelFileDescriptor",
+                                                              "FileDescriptor",
+                                                              "ParcelableHolder",
+                                                              "IBinder",
+                                                              "String",
+                                                              "CharacterSequence",
+                                                              "void",
+                                                              "boolean",
+                                                              "byte",
+                                                              "char",
+                                                              "int",
+                                                              "long",
+                                                              "float",
+                                                              "double"};
+    return std::find(kNoOutParamTypes.begin(), kNoOutParamTypes.end(), typeName) !=
+           kNoOutParamTypes.end();
+}
+
 void AidlHelper::emitAidl(
         const Interface& interface, const Coordinator& coordinator,
         const std::map<const NamedType*, const ProcessedCompoundType>& processedTypes) {
@@ -160,26 +188,29 @@ void AidlHelper::emitAidl(
         std::vector<const NodeWithVersion<NamedType>> supersededNamedTypes;
         std::map<std::string, NodeWithVersion<Method>> latestMethodForBaseName;
         std::vector<const NodeWithVersion<Method>> supersededMethods;
-        std::vector<const Interface*> typeChain = interface.typeChain();
-        for (auto iface = typeChain.rbegin(); iface != typeChain.rend(); ++iface) {
-            for (const Method* method : (*iface)->userDefinedMethods()) {
-                pushVersionedNodeOntoMap({(*iface)->fqName().getPackageMajorVersion(),
-                                          (*iface)->fqName().getPackageMinorVersion(), method,
+        for (const Interface* iface : interface.typeChain()) {
+            if (!AidlHelper::shouldBeExpanded(interface.fqName(), iface->fqName())) {
+                // Stop traversing extended interfaces once they leave this package
+                break;
+            }
+            for (const Method* method : iface->userDefinedMethods()) {
+                pushVersionedNodeOntoMap({iface->fqName().getPackageMajorVersion(),
+                                          iface->fqName().getPackageMinorVersion(), method,
                                           getBaseName(method->name())},
                                          &latestMethodForBaseName, &supersededMethods);
             }
             // Types from other interfaces will be handled while those interfaces
             // are being emitted.
-            if ((*iface)->getBaseName() != interface.getBaseName()) {
+            if (iface->getBaseName() != interface.getBaseName()) {
                 continue;
             }
-            for (const NamedType* type : (*iface)->getSubTypes()) {
+            for (const NamedType* type : iface->getSubTypes()) {
                 // The baseName for types is not being stripped of the version
                 // numbers like that of the methods. If a type was named
                 // BigStruct_1_1 and the previous version was named BigStruct,
                 // they will be treated as two different types.
-                pushVersionedNodeOntoMap({(*iface)->fqName().getPackageMajorVersion(),
-                                          (*iface)->fqName().getPackageMinorVersion(), type,
+                pushVersionedNodeOntoMap({iface->fqName().getPackageMajorVersion(),
+                                          iface->fqName().getPackageMinorVersion(), type,
                                           getAidlName(type->fqName())},
                                          &latestTypeForBaseName, &supersededNamedTypes);
             }
@@ -217,8 +248,12 @@ void AidlHelper::emitAidl(
 
                          if (shouldWarnStatusType(aidlType)) {
                              out << "// FIXME: AIDL has built-in status types. Do we need the "
-                                    "status type "
-                                    "here?\n";
+                                    "status type here?\n";
+                         }
+                         if (method->results().size() > 1 && shouldWarnOutParam(aidlType)) {
+                             out << "// FIXME: AIDL does not allow " << aidlType
+                                 << " to be an out parameter.\n";
+                             out << "// Move it to return, or add it to a Parcelable.\n";
                          }
                          results.push_back(res);
                      }
@@ -297,7 +332,6 @@ void AidlHelper::emitAidl(
                          }
                          wrappedOutput.group([&] {
                              if (emitArgs) wrappedOutput.printUnlessWrapped(" ");
-                             // TODO: Emit warning if a primitive is given as a out param.
                              emitAidlMethodParams(&wrappedOutput, results, /* prefix */ "out ",
                                                   /* attachToLast */ ");\n", interface);
                          });
